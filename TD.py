@@ -42,14 +42,35 @@ pi = pi / pi.sum(axis=1, keepdims=True)
 # =========================================================
 # Compute V_pi by solving Bellman equation 
 # =========================================================
+# Bellman equation: 
+#   V_pi(s) = R_pi(s) + γ Σ_{s'} P_pi(s, s') V_pi(s') 
+# Bellman matrix form: 
+#   V_pi = R_pi + γ P_pi V_pi 
+
+# ----------------------------- 
+# Transition matrix for particular policy pi 
+# ----------------------------- 
+# Probability of going from s to s' when agent follows pi 
+# Marginalizes over actions: 
+#   P_pi(s, s') = Σ_a  π(s, a) · P(s, s', a)
 
 # Build P_pi(s,s') = sum_a pi(s,a) P(s,s',a)
 P_pi = np.einsum("sja,sa->sj", P, pi)   # (S,S), j is s'
 
+
+# ----------------------------- 
+# Expected immediate reward in state s when action is chosen 
+# ----------------------------- 
+# Marginalizes over actions 
+
 # Build R_pi(s) = sum_a pi(s,a) R(s,a)
 R_pi = (pi * R).sum(axis=1)             # (S,)
 
-# Exact policy evaluation: (I - gamma P_pi) V_pi = R_pi
+# ----------------------------- 
+# Exact policy evaluation V_pi 
+# ----------------------------- 
+
+# (I - gamma P_pi) V_pi = R_pi
 V_pi = np.linalg.solve(np.eye(S) - gamma * P_pi, R_pi)   # (S,)
 
 # =========================================================
@@ -73,6 +94,8 @@ for i in range(len(lambdas)):
 
         # sample action from pi(s,:)
         a = rng.choice(A, p=pi[s])
+        
+        import pdb; pdb.set_trace()
 
         # sample next state from P(s,:,a)
         s_next = rng.choice(S, p=P[s, :, a])
