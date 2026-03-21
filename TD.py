@@ -55,8 +55,9 @@ pi = pi / pi.sum(axis=1, keepdims=True)
 #   P_pi(s, s') = Σ_a  π(s, a) · P(s, s', a)
 
 # Build P_pi(s,s') = sum_a pi(s,a) P(s,s',a)
-P_pi = np.einsum("sja,sa->sj", P, pi)   # (S,S), j is s'
+P_pi = np.einsum("sja, sa->sj", P, pi)   # (S,S), j is s'
 
+import pdb; pdb.set_trace() 
 
 # ----------------------------- 
 # Expected immediate reward in state s when action is chosen 
@@ -98,7 +99,7 @@ for i in range(len(lambdas)):
         import pdb; pdb.set_trace()
 
         # sample next state from P(s,:,a)
-        s_next = rng.choice(S, p=P[s, :, a])
+        s_next = rng.choice(S, p = P[s, :, a])
 
         # reward
         r = R[s, a]
