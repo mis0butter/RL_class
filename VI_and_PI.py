@@ -33,6 +33,9 @@ R = np.random.rand(S, A)
 pi = np.random.rand(S, A)
 pi = pi / pi.sum(axis=1, keepdims=True)
 
+import pdb; pdb.set_trace() 
+
+
 # =========================================================
 # Compute V_star by enumerating all deterministic policies
 # =========================================================
