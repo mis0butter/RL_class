@@ -8,21 +8,22 @@
 # http://incompleteideas.net/book/RLbook2020.pdf
 
 # ========================================================= 
-# Task 1: Q-Learning with Linear Function Approximation [50 points]
+# Task 2: Policy Gradient with Linear Function Approximation [50 points]
 # ========================================================= 
 
 # ----------------------------- 
-# Objective: Implement the Q-learning algorithm to learn an approximate action-value function
+# Objective:  Implement a policy gradient method to learn a parameterized stochastic policy π(a|s; θ) with linear function approximation.
 # ----------------------------- 
 
-# Q(s, a; θ) using a linear function approximation.
-# • Represent the Q-function as:
-#       Q(s, a; θ) = ϕ(s, a)^T θ
-# where ϕ(s, a) is the feature vector corresponding to state-action pair (s, a) and θ is the weight
-# vector.
-# • Implement the Q-learning update:
-#       θ_k+1 = θ_k + α(r_k + γ max_a' Q(s'_k, a'; θ_k) - Q(s_k, a_k; θ_k)) ∇_θ Q(s_k, a_k; θ_k)
-# • Train your agent for multiple episodes and report the average reward over time.
+# Represent the policy as a softmax over linear features: 
+#                 exp(ϕ(s, a)^T θ)
+#   π(a|s; θ) = --------------------
+#               ∑_b exp(ϕ(s, b)^T θ)
+
+# Implement the update rule: 
+#   θ_k+1 ← θ_k + α ∇_θ f(π_k)
+
+# Train your agent for multiple episodes and report the average reward over time 
 
 # ----------------------------- 
 # Deliverables:
@@ -30,8 +31,7 @@
 
 # 1. Submit your code.
 # 2. Plot showing learning progress (average reward per episode).
-# 3. Explain the choice of feature representation and behavior policies for data collection. 
-#    Implement the outcome of your learning and report the results.
+# 3. Explain the choice of feature representation and how do you estimate the gradients. Implement the outcome of your learning and report the results.
 
 # ========================================================= 
 # import packages 
@@ -260,19 +260,33 @@ print(f"After {num_steps} steps — Ball X: {obs[101]}, Ball Y: {obs[99]}, Paddl
 env.close() 
 
 # ========================================================= 
-# Q-learning set up!!! 
+# Policy gradient set up!!! 
 # ========================================================= 
-# Algorithm: 
+# Algorithm: one-step actor-critic (episodic) 
 #  
-# Initialize Q(s,a), for all s in S and a in A, arbitrarily except Q(terminal, a) = 0 for all a 
-# Loop for each episode: 
-#   Initialize S 
-#   Loop for each step of episode: 
-#       Choose A from S using policy derived from Q (epsilon-greedy) 
-#       Take action A, observe R and S' 
-#       Q(S, A) <-- Q(S, A) + α[ R + γ max_a Q(S', a) - Q(S,A) ]
+# Input: a differentiable policy parameterization π(a|s, θ) 
+# Input: a differentiable state-value function parameterization vhat(s,w) 
+# Parameters: step sizes α^θ > 0, α^w > 0 
+# Initialize policy parameter θ in R^d' and state-value weights w in R^d 
+# Loop forever (for each episode): 
+#   Initialize S (first state of episode) 
+#   I <-- 1 
+#   Loop while S is not terminal (for each time step): 
+#       A ~ π(.|S, θ) 
+#       Take action A, observe S', R 
+#       delta <-- R + gamma vhat(S', w) - vhat(S, w) 
+#       w <-- w + alpha^w delta grad vhat(S, w) 
+#       theta <-- theta + alpha^theta I delta grad ln pi(A|S, theta) 
+#       I <-- gamma I 
 #       S <-- S' 
-#   until S is terminal 
+# ========================================================= 
+# Represent the policy as a softmax over linear features: 
+#                 exp(ϕ(s, a)^T θ)
+#   π(a|s; θ) = --------------------
+#               ∑_b exp(ϕ(s, b)^T θ)
+
+# Implement the update rule: 
+#   θ_k+1 ← θ_k + α ∇_θ f(π_k)
 # ========================================================= 
 
 # re-open env for training 
@@ -282,46 +296,118 @@ env = gym.make('ALE/Breakout-v5', obs_type='ram')
 ram1, _ = env.reset() 
 ram2, _, _, _, _ = env.step(1)  # action 1 = FIRE to launch ball 
 
-# initialize weight matrix!! shape: [N_actions, N_features]
+# ----------------------------- 
+# Initialize  
+# ----------------------------- 
+# Input: differentiable policy π(a|s, θ) — softmax linear policy
+# Input: a differentiable state-value function parameterization vhat(s,w)
+# Parameters: step sizes α^θ > 0, α^w > 0 
+# Initialize policy parameter θ in R^(N_actions × N_features) 
+# Initialize state-value weights w in R^N_features 
+# ----------------------------- 
+
+# policy parameters: θ[a, :] gives weights for action a 
 theta = np.zeros((N_actions, N_features))
 
-# parameters 
-# alpha is divided by the number of active tiles per step (~21) 
-# so that the effective step size per feature is reasonable 
-epsilon0 = 1.0       # initial exploration rate  
-alpha    = 0.1 / 21  # step size (normalized by ~active tiles)
-gamma    = 0.99      # discount factor 
+# state-value (critic/baseline) weights: vhat(s, w) = w^T ϕ(s)
+w = np.zeros(N_features)
+
+# step sizes (divided by ~21 active tiles per step) 
+alpha_theta = 0.01 / 21   # actor step size  
+alpha_w     = 0.1  / 21   # critic step size (larger — critic should learn faster)
+gamma       = 0.99         # discount factor 
 
 ep_reward_hist = [] 
 reward_ep   = 0 
 max_iter    = 500000 
 
-print(f"\nTraining Q-learning with RAM features...")
+# discount factor accumulator — resets to 1 each episode 
+I = 1.0 
+
+print(f"\nTraining one-step actor-critic with RAM features...")
 print(f"  Feature dimension: {N_features}")
 print(f"  Theta shape: {theta.shape}")
+print(f"  w shape:     {w.shape}")
 print(f"  Max iterations: {max_iter}")
 
 # ========================================================= 
-# Q-learning loop!!! 
+# helper: softmax policy π(a|s, θ)
+# ========================================================= 
+
+def softmax_policy(state, theta):
+    """Compute π(a|s; θ) for all actions using softmax over linear features.
+    
+        π(a|s; θ) = exp(ϕ(s)^T θ_a) / Σ_b exp(ϕ(s)^T θ_b)
+    
+    Args:
+        state: tile-coded feature vector ϕ(s), shape (N_features,)
+        theta: policy weights, shape (N_actions, N_features)
+    
+    Returns:
+        probs: action probabilities, shape (N_actions,)
+    """
+    # logits[a] = ϕ(s)^T θ_a = θ[a, :] · state
+    logits = theta @ state                       # shape (N_actions,)
+    logits -= np.max(logits)                     # subtract max for numerical stability
+    exp_logits = np.exp(logits)
+    probs = exp_logits / np.sum(exp_logits)
+    return probs
+
+def grad_log_policy(state, action, theta):
+    """Compute ∇_θ ln π(a|s; θ) for the softmax linear policy.
+    
+    For softmax linear:
+        ∇_{θ_a} ln π(a|s; θ) = ϕ(s) - Σ_b π(b|s; θ) ϕ(s) 
+                              = ϕ(s) (1 - π(a|s; θ))           for the taken action a
+        ∇_{θ_b} ln π(a|s; θ) = -π(b|s; θ) ϕ(s)               for b ≠ a 
+    
+    Equivalently, the full gradient w.r.t. θ (as a matrix) is:
+        ∇_θ ln π(a|s; θ)[b, :] = (1_{b=a} - π(b|s; θ)) ϕ(s)
+    
+    Args:
+        state:  feature vector ϕ(s), shape (N_features,)
+        action: the action taken (int)
+        theta:  policy weights, shape (N_actions, N_features)
+    
+    Returns:
+        grad: gradient matrix, shape (N_actions, N_features)
+    """
+    probs = softmax_policy(state, theta)
+    
+    # grad[b, :] = (1_{b=a} - π(b|s;θ)) * ϕ(s)
+    grad = np.zeros_like(theta)
+    for b in range(theta.shape[0]):
+        indicator = 1.0 if b == action else 0.0 
+        grad[b, :] = (indicator - probs[b]) * state 
+    
+    return grad 
+
+# ========================================================= 
+# Policy gradient loop: one-step actor-critic (episodic) 
+# ========================================================= 
+# Loop forever (for each episode): 
+#   Initialize S (first state of episode) 
+#   I <-- 1 
+#   Loop while S is not terminal (for each time step): 
+#       A ~ π(.|S, θ) 
+#       Take action A, observe S', R 
+#       δ <-- R + γ v̂(S', w) - v̂(S, w) 
+#       w <-- w + α^w · δ · ∇_w v̂(S, w) 
+#       θ <-- θ + α^θ · I · δ · ∇_θ ln π(A|S, θ) 
+#       I <-- γ · I 
+#       S <-- S' 
 # ========================================================= 
 
 for k in range(max_iter): 
-    
-    # decay epsilon 
-    epsilon = max(0.05, epsilon0 / (1.0 + 0.0001 * k))
 
     # state feature representation from RAM  
     state = get_state(ram2, ram1)
 
-    # compute all 4 q_vals using matrix dot product 
-    # Q(s, a; θ) = θ[a] · ϕ(s)  for each action a 
-    q_vals = np.dot(theta, state) 
-
-    # Choose A from S using policy derived from Q (epsilon-greedy) 
-    if rng.random() < epsilon: 
-        action = env.action_space.sample() 
-    else: 
-        action = np.argmax(q_vals) 
+    # ----------------------------- 
+    # A ~ π(·|S, θ)  — sample action from softmax policy 
+    # ----------------------------- 
+    probs = softmax_policy(state, theta) 
+    action = rng.choice(N_actions, p=probs) 
 
     # Take action A, observe R and transition to new RAM state 
     ram3, reward, terminated, truncated, info = env.step(action) 
@@ -333,24 +419,30 @@ for k in range(max_iter):
     reward_ep += reward 
 
     # ----------------------------- 
-    # Q(S, A) <-- Q(S, A) + α[ R + γ max_a Q(S', a) - Q(S,A) ]
+    # One-step actor-critic update 
     # ----------------------------- 
 
-    # compute td target based on if ep terminated or not 
-    if terminated or truncated: 
-        td_target = reward_clipped 
-    else: 
-        # R + γ max_a Q(S', a) 
-        next_state  = get_state(ram3, ram2)
-        next_q_vals = np.dot(theta, next_state)
-        td_target   = reward_clipped + gamma * np.max(next_q_vals) 
+    # v̂(S, w) = w^T ϕ(S) 
+    v_s = np.dot(w, state)
 
-    # TD error: R + γ max_a Q(S', a) - Q(S, A) 
-    td_err = td_target - q_vals[action]  
-    
-    # update ONLY the weights for the action we took 
-    # ∇_θ Q(s, a; θ) = ϕ(s) for the linear case 
-    theta[action, :] += alpha * td_err * state 
+    # δ <-- R + γ v̂(S', w) - v̂(S, w)
+    if terminated or truncated: 
+        delta = reward_clipped - v_s 
+    else: 
+        next_state = get_state(ram3, ram2)
+        v_sp = np.dot(w, next_state)
+        delta = reward_clipped + gamma * v_sp - v_s 
+
+    # Critic update: w <-- w + α^w · δ · ∇_w v̂(S, w)
+    # For linear v̂(s, w) = w^T ϕ(s), ∇_w v̂ = ϕ(s)
+    w += alpha_w * delta * state 
+
+    # Actor update: θ <-- θ + α^θ · I · δ · ∇_θ ln π(A|S, θ)
+    grad = grad_log_policy(state, action, theta) 
+    theta += alpha_theta * I * delta * grad 
+
+    # I <-- γ · I 
+    I *= gamma 
 
     # ----------------------------- 
     # advance to next state or reset episode 
@@ -366,11 +458,11 @@ for k in range(max_iter):
             last50 = ep_reward_hist[-50:]
             print(f"  Episode {len(ep_reward_hist):4d} | "
                   f"Last 50 avg: {np.mean(last50):6.2f} | "
-                  f"Max: {np.max(last50):5.1f} | "
-                  f"Epsilon: {epsilon:.3f}")
+                  f"Max: {np.max(last50):5.1f}")
 
         # reset episode 
         reward_ep = 0 
+        I = 1.0   # reset discount factor accumulator for new episode 
         ram1, _ = env.reset()
         ram2, _, _, _, _ = env.step(1)  # FIRE to launch ball 
 
@@ -405,7 +497,7 @@ if len(ep_reward_hist) >= window:
                  color='darkblue', linewidth=2, label=f'{window}-episode avg')
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Reward")
-axes[0].set_title("Q-learning with RAM Features: Atari Breakout")
+axes[0].set_title("Policy Gradient (Actor-Critic) with RAM Features: Atari Breakout")
 axes[0].legend()
 axes[0].grid(True, alpha=0.3)
 
@@ -425,8 +517,8 @@ axes[1].set_title("Log Scale")
 axes[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig("hw4/Q_learning_breakout_ram.png", dpi=300)
-print(f"\nPlot saved to hw4/Q_learning_breakout_ram.png")
+plt.savefig("hw4/policy_gradient_breakout_ram.png", dpi=300)
+print(f"\nPlot saved to hw4/policy_gradient_breakout_ram.png")
 print(f"Total episodes: {len(ep_reward_hist)}")
 print(f"Final {window}-episode average reward: {np.mean(ep_reward_hist[-window:]):.2f}")
 
@@ -434,10 +526,15 @@ print(f"Final {window}-episode average reward: {np.mean(ep_reward_hist[-window:]
 # print learned weight summary (tile-coded weights are too many to print individually)
 # ----------------------------- 
 
-print("\n--- Learned weight summary (θ) ---")
+print("\n--- Learned weight summary (θ — actor) ---")
 action_names = ['NOOP', 'FIRE', 'RIGHT', 'LEFT']
 print(f"{'Action':>10s} {'||θ||':>8s} {'mean':>8s} {'min':>8s} {'max':>8s} {'nonzero':>8s}")
 for a in range(N_actions):
-    w = theta[a]
-    print(f"{action_names[a]:>10s} {np.linalg.norm(w):8.4f} {w.mean():8.4f} "
-          f"{w.min():8.4f} {w.max():8.4f} {np.sum(np.abs(w) > 1e-6):8d}")
+    wt = theta[a]
+    print(f"{action_names[a]:>10s} {np.linalg.norm(wt):8.4f} {wt.mean():8.4f} "
+          f"{wt.min():8.4f} {wt.max():8.4f} {np.sum(np.abs(wt) > 1e-6):8d}")
+
+print(f"\n--- Learned weight summary (w — critic) ---")
+print(f"  ||w|| = {np.linalg.norm(w):.4f}, mean = {w.mean():.4f}, "
+      f"min = {w.min():.4f}, max = {w.max():.4f}, "
+      f"nonzero = {np.sum(np.abs(w) > 1e-6)}")
